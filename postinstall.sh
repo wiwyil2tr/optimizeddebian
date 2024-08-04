@@ -28,6 +28,7 @@ fi
 sudo apt install git
 git clone https://github.com/wiwyil2tr/optimizeddebian.git
 cd optimizeddebian/postinstall
+chmod +x ./*.sh
 sudo ln -sf /usr/share/images/desktop-base/Aurora.jpg /usr/share/backgrounds/Photo\ of\ Valley.jpg
 
 echo "Choose your desktop style:"
