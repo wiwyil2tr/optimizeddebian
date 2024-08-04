@@ -1,4 +1,5 @@
 #!/bin/bash
+echo "Welcome to SULET Optimezed Debian GNU/Linux"
 echo "Writing to /etc/apt/sources.list..."
 sudo tee /etc/apt/sources.list > /dev/null <<EOF
 # 默认注释了源码镜像以提高 apt update 速度，如有需要可自行取消注释
@@ -60,5 +61,11 @@ select style in "gnome2 -- traditional style, top + bottom panels" "dock.sh -- t
 done
 echo "cleaning"
 rm -r ${HOME}/optimizeddebian
-echo "Script execution completed. Welcome to SULET Optimized Debian GNU/Linux"
+echo "Script execution completed. Please Reboot your system to use SULET Optimized Debian GNU/Linux"
+read -p "Do you want to reboot now? (y/n): " rebooting
+if [[ $rebooting == [Yy]* ]]; then
+    sudo reboot
+else
+    echo "Please REBOOT later."
+fi
 
