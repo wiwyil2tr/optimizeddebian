@@ -25,7 +25,7 @@ if [[ $perform_upgrade == [Yy]* ]]; then
 else
     echo "Skipping system upgrade."
 fi
-sudo apt intall git
+sudo apt install git
 git clone https://github.com/wiwyil2tr/optimizeddebian.git
 cd optimizeddebian/postinstall
 sudo ln -sf /usr/share/images/desktop-base/Aurora.jpg /usr/share/backgrounds/Photo\ of\ Valley.jpg
@@ -38,12 +38,12 @@ select style in "gnome2 -- traditional style, top + bottom panels" "dock.sh -- t
             ./gnome2.sh
             break
             ;;
-        "dock.sh -- top panel + dock style")
+        "dock -- top panel + dock style")
             echo "Executing dock.sh..."
             ./dock.sh
             break
             ;;
-        "windows.sh -- bottom panel (Windows-like)")
+        "windows -- bottom panel (Windows-like)")
             echo "Executing windows.sh..."
             ./windows.sh
             break
