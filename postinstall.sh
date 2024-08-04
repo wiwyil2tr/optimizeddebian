@@ -59,6 +59,6 @@ select style in "gnome2 -- traditional style, top + bottom panels" "dock.sh -- t
     esac
 done
 echo "cleaning"
-rm -r postinstall
+rm -r ${HOME}/optimizeddebian
 echo "Script execution completed. Welcome to SULET Optimized Debian GNU/Linux"
 
