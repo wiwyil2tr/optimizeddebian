@@ -60,7 +60,7 @@ select style in "gnome2 -- traditional style, top + bottom panels" "dock -- top 
     esac
 done
 echo "cleaning"
-rm -r ${HOME}/optimizeddebian
+sudo rm -r ${HOME}/optimizeddebian
 echo "Script execution completed. Please Reboot your system to use SULET Optimized Debian GNU/Linux"
 read -p "Do you want to reboot now? (y/n): " rebooting
 if [[ $rebooting == [Yy]* ]]; then
