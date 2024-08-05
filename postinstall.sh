@@ -33,7 +33,7 @@ chmod +x ./*.sh
 sudo ln -sf /usr/share/images/desktop-base/Aurora.jpg /usr/share/backgrounds/Photo\ of\ Valley.jpg
 
 echo "Choose your desktop style:"
-select style in "gnome2 -- traditional style, top + bottom panels" "dock.sh -- top panel + dock style" "windows.sh -- bottom panel (Windows-like)" "Skip"; do
+select style in "gnome2 -- traditional style, top + bottom panels" "dock -- top panel + dock style" "windows -- bottom panel (Windows-like)" "Skip"; do
     case $style in
         "gnome2 -- traditional style, top + bottom panels")
             echo "Executing gnome2.sh..."
