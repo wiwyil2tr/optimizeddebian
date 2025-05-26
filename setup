@@ -1,0 +1,451 @@
+#!/bin/bash
+# Auto-install Debian from LiveCD to disk using Btrfs & subvolumes
+# Language choice: Chinese or English for installer prompts 
+# Creation Date: 2025-05-25 07:37:43
+# Author: wiwyil2tr
+
+set -e
+
+# Function for cleanup on exit or error
+cleanup() {
+    umount -R /mnt 2>/dev/null || true
+    swapoff -a 2>/dev/null || true
+}
+trap cleanup EXIT ERR
+
+# Function to mount with error checking
+mount_with_check() {
+    if ! mount "$@"; then
+        echo "Error: Failed to mount $@"
+        exit 1
+    fi
+}
+
+# Function to detect and enable swap
+enable_swap() {
+    echo "Checking for swap partitions..."
+    # Find all swap partitions
+    while IFS= read -r swap_part; do
+        if [ -n "$swap_part" ]; then
+            echo "Found swap partition: $swap_part"
+            # Enable swap
+            swapon "$swap_part" || echo "Warning: Could not enable swap on $swap_part"
+            # Add to fstab
+            SWAP_UUID=$(blkid -s UUID -o value "$swap_part")
+            if [ -n "$SWAP_UUID" ]; then
+                echo "UUID=$SWAP_UUID none swap sw 0 0" >> /mnt/etc/fstab
+                echo "Added swap partition to fstab: $swap_part (UUID: $SWAP_UUID)"
+            fi
+        fi
+    done < <(lsblk -ln -o NAME,TYPE,FSTYPE | awk '$2=="part" && $3=="swap" {print "/dev/"$1}')
+}
+
+# 0. Language selection for installer prompts
+echo "Choose installer language / 选择安装工具语言:"
+echo "  1) English"
+echo "  2) 中文"
+read -p "Enter 1 or 2 / 请输入 1 或 2: " INST_LANG
+
+# Set language-specific messages
+if [ "$INST_LANG" = "2" ]; then
+    T_SYS_LANG_PROMPT="请选择系统语言 (如 zh_CN.UTF-8):"
+    T_KBD_LAYOUT_PROMPT="请选择键盘布局 (如 cn, us):"
+    T_TIMEZONE_PROMPT="请输入时区（如 Asia/Shanghai）:"
+    T_HOSTNAME_PROMPT="请输入主机名:"
+    T_USERNAME_PROMPT="请输入用户名:"
+    T_USERNAME_EMPTY="用户名不能为空，请重新输入:"
+    T_PASSWORD_PROMPT="请输入密码:"
+    T_PASSWORD_CONFIRM="请再次输入密码:"
+    T_PASSWORD_ERROR="两次输入的密码不一致或为空，请重试."
+    T_EFI_ERROR="未检测到EFI分区，安装终止."
+    T_AVALIBLE_PROMPT="选择要安装系统的设备"
+    T_RUN_AS_ROOT="请以root身份运行!"
+    T_NO_FREE_SPACE="未检测到足够空闲空间（至少10GiB），安装终止."
+    T_NO_FREE_START="无法确定最大空闲空间的起始位置."
+    T_BTRFS_CREATED="已创建Btrfs分区:"
+    T_COPYING="正在计算总大小..."
+    T_COPY_START="正在复制系统文件..."
+    T_COPY_DONE="系统文件复制完成."
+    T_INSTALL_DONE="安装完成。重启以使用新系统。"
+    T_POST_OPTIONS="后续可选操作:"
+    T_POST_OPTIONS_LIST="
+  1) 更改APT源
+  2) 升级系统
+  3) 安装打印机驱动
+  4) 安装NVIDIA驱动
+  5) 配置zsh"
+    T_POST_INPUT="请输入需要执行的操作编号（如1,2或all都选）:"
+    T_EDIT_SOURCES="正在编辑APT源..."
+    T_UPDATE="正在升级系统..."
+    T_PRINTER="请选择要安装的打印机驱动:"
+    T_PRINTER_LIST="
+  1) HP (hplip)
+  2) 佳能 (printer-driver-gutenprint)
+  3) 爱普生 (printer-driver-escpr)
+  4) 全部
+  5) 不安装"
+    T_PRINTER_SKIP="跳过打印机驱动安装."
+    T_PRINTER_UNKNOWN="未知选择，跳过打印机驱动安装."
+    T_NVIDIA_PROMPT="是否安装NVIDIA专有驱动？(y/n):"
+    T_NVIDIA_INSTALL="正在安装NVIDIA驱动..."
+    T_NVIDIA_SKIP="跳过NVIDIA驱动安装."
+    T_NVIDIA_NOTE="如需启用NVIDIA驱动，请重启."
+    T_ALL_DONE="所有操作已完成，可以重启进入新系统."
+    T_UNKNOWN_OPTION="未知选项:"
+    T_CONFIGURE_ZSH="正在配置zsh..."
+else
+    T_SYS_LANG_PROMPT="Select system language (e.g. en_US.UTF-8):"
+    T_KBD_LAYOUT_PROMPT="Select keyboard layout (e.g. us, de, fr):"
+    T_TIMEZONE_PROMPT="Enter your timezone (e.g. Europe/London):"
+    T_HOSTNAME_PROMPT="Enter hostname:"
+    T_AVALIBLE_PROMPT="Choose the device to install system:"
+    T_USERNAME_PROMPT="Enter your username:"
+    T_USERNAME_EMPTY="Username cannot be blank. Enter your username:"
+    T_PASSWORD_PROMPT="Enter your password:"
+    T_PASSWORD_CONFIRM="Confirm your password:"
+    T_PASSWORD_ERROR="Passwords do not match or are empty. Try again."
+    T_EFI_ERROR="No EFI partition detected. Exiting."
+    T_RUN_AS_ROOT="Run as root!"
+    T_NO_FREE_SPACE="No sufficient free space (at least 10GiB required). Exiting."
+    T_NO_FREE_START="Could not determine start of largest free space"
+    T_BTRFS_CREATED="Created Btrfs partition:"
+    T_COPYING="Calculating total size for progress bar..."
+    T_COPY_START="Copying system files..."
+    T_COPY_DONE="System files copied."
+    T_INSTALL_DONE="Installation complete. Reboot to use the new system."
+    T_POST_OPTIONS="Post-installation options:"
+    T_POST_OPTIONS_LIST="
+  1) Change APT sources
+  2) Update the system
+  3) Install printer drivers
+  4) Install NVIDIA drivers
+  5) Configure zsh"
+    T_POST_INPUT="Enter numbers corresponding to the tasks you want to perform (e.g. 1,2 or all):"
+    T_EDIT_SOURCES="Editing APT sources..."
+    T_UPDATE="Updating the system..."
+    T_PRINTER="Which printer driver's packages do you want to install?"
+    T_PRINTER_LIST="
+  1) HP (hplip)
+  2) Canon (printer-driver-gutenprint)
+  3) Epson (printer-driver-escpr)
+  4) All printer drivers above
+  5) None"
+    T_PRINTER_SKIP="Skipping printer driver installation."
+    T_PRINTER_UNKNOWN="Unknown choice. Skipping printer driver installation."
+    T_NVIDIA_PROMPT="Do you want to install proprietary NVIDIA drivers? (y/n):"
+    T_NVIDIA_INSTALL="Installing NVIDIA drivers..."
+    T_NVIDIA_SKIP="Skipping NVIDIA driver installation."
+    T_NVIDIA_NOTE="You may need to reboot for NVIDIA drivers to take effect."
+    T_ALL_DONE="All done. You may now reboot into your new Debian system."
+    T_UNKNOWN_OPTION="Unknown option:"
+    T_CONFIGURE_ZSH="Configuring zsh..."
+fi
+
+# 1. System language & keyboard selection
+echo "$T_SYS_LANG_PROMPT"
+read -r SYS_LANG
+: "${SYS_LANG:=en_US.UTF-8}"
+
+echo "$T_KBD_LAYOUT_PROMPT"
+read -r KBD_LAYOUT
+: "${KBD_LAYOUT:=us}"
+
+# 1.5 Set Timezone
+echo "$T_TIMEZONE_PROMPT"
+read -r SYS_TZ
+: "${SYS_TZ:=Etc/UTC}"
+
+# 2. User input
+echo "$T_HOSTNAME_PROMPT"
+read -r HOSTNAME
+: "${HOSTNAME:=debian}"
+
+echo "$T_USERNAME_PROMPT"
+read -r USER_NAME
+while [ -z "$USER_NAME" ]; do
+    echo "$T_USERNAME_EMPTY"
+    read -r USER_NAME
+done
+
+# Improved password handling
+while true; do
+    echo "$T_PASSWORD_PROMPT"
+    read -rs USER_PASS1
+    echo
+    echo "$T_PASSWORD_CONFIRM"
+    read -rs USER_PASS2
+    echo
+    
+    if [ -z "$USER_PASS1" ] || [ -z "$USER_PASS2" ]; then
+        echo "$T_PASSWORD_ERROR"
+        continue
+    fi
+    
+    if [ "$USER_PASS1" = "$USER_PASS2" ]; then
+        USER_PASS="$USER_PASS1"
+        break
+    else
+        echo "$T_PASSWORD_ERROR"
+    fi
+done
+
+SUBVOLS=(root home var log)
+
+need() { command -v "$1" >/dev/null || { echo "Missing $1"; exit 1; }; }
+for dep in lsblk parted blkid btrfs mkfs.btrfs rsync grep awk sort head pv du; do need "$dep"; done
+
+[ "$(id -u)" = 0 ] || { echo "$T_RUN_AS_ROOT"; exit 1; }
+
+# 3. Detect EFI partition
+EFI_PART=""
+for dev in $(lsblk -pnlo NAME,TYPE | awk '$2=="part"{print $1}'); do
+    FS=$(blkid "$dev" | grep -o 'TYPE="vfat"')
+    FLAGS=$(lsblk -no PARTFLAGS "$dev")
+    [ "$FS" = 'TYPE="vfat"' ] || continue
+    # Check for boot or esp flag
+    if parted -lm <(echo "$dev") print | grep -qE 'boot|esp'; then
+        EFI_PART="$dev"
+        break
+    fi
+done
+
+if [ -z "$EFI_PART" ]; then
+    echo "$T_EFI_ERROR"
+    exit 1
+fi
+
+EFI_DISK=$(lsblk -no PKNAME "$EFI_PART" | head -n1)
+DISK="/dev/$EFI_DISK"
+echo "Detected EFI partition: $EFI_PART on $DISK"
+
+# 4. Ask user for target device and find free space
+lsblk -d -n -l -o NAME,SIZE,MODEL | grep -v "loop\|sr"
+
+echo "$T_AVALIBLE_PROMPT"
+read -r TARGET_DEV
+TARGET_DEV="/dev/${TARGET_DEV}"
+
+# Validate device exists
+if [ ! -b "$TARGET_DEV" ]; then
+    echo "Error: Device $TARGET_DEV does not exist"
+    exit 1
+fi
+
+# 5. Find unallocated space
+echo "Finding unallocated space on $TARGET_DEV..."
+
+# Make sure we're using a clean partition table
+parted -s "$TARGET_DEV" mklabel gpt
+
+# Create new partition aligned to optimal sectors
+parted -s "$TARGET_DEV" -- mkpart primary 2048s 100%
+
+# Wait for partition to be created and kernel to update
+sleep 2
+udevadm settle
+
+# Get the new partition device
+ROOT_PART=$(lsblk -pnlo NAME,TYPE "$TARGET_DEV" | grep "part" | tail -n1 | awk '{print $1}')
+
+if [ -n "$ROOT_PART" ]; then
+    echo "$T_BTRFS_CREATED $ROOT_PART"
+else
+    echo "Error: Failed to create partition"
+    exit 1
+fi
+
+# 6. Format and mount
+mkfs.btrfs -f "$ROOT_PART"
+
+# Create temporary mount point for subvolume creation
+mkdir -p /mnt
+mount_with_check "$ROOT_PART" /mnt
+
+# Create subvolumes
+for subvol in "${SUBVOLS[@]}"; do
+    btrfs subvolume create "/mnt/@${subvol}"
+done
+
+# Unmount to remount with subvolumes
+umount /mnt
+
+# Create all necessary mount points
+mkdir -p /mnt/boot/efi
+mkdir -p /mnt/home
+mkdir -p /mnt/var
+mkdir -p /mnt/log
+
+# Mount subvolumes
+mount_with_check -o subvol=@root "$ROOT_PART" /mnt
+mount_with_check -o subvol=@home "$ROOT_PART" /mnt/home
+mount_with_check -o subvol=@var "$ROOT_PART" /mnt/var
+mount_with_check -o subvol=@log "$ROOT_PART" /mnt/log
+mount_with_check "$EFI_PART" /mnt/boot/efi
+
+# Verify mounts and enable swap
+echo "Verifying mounts:"
+mount | grep /mnt
+
+# Enable swap if found
+echo "Checking and enabling swap..."
+enable_swap
+
+# 7. Rsync system with Progress Bar
+echo "$T_COPYING"
+TOTAL_SIZE=$(du -s --exclude=/mnt --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/tmp --exclude=/run --exclude=/media --exclude=/lost+found / | awk '{print $1}')
+echo "$T_COPY_START"
+tar cf - --one-file-system --acls --xattrs --numeric-owner \
+    --exclude=/dev --exclude=/proc --exclude=/sys --exclude=/tmp --exclude=/run --exclude=/mnt --exclude=/media --exclude=/lost+found / \
+    | pv -s ${TOTAL_SIZE}k | tar xf - -C /mnt
+echo "$T_COPY_DONE"
+
+# 8. Fstab
+UUID=$(blkid -s UUID -o value "$ROOT_PART")
+EFI_UUID=$(blkid -s UUID -o value "$EFI_PART")
+cat > /mnt/etc/fstab <<EOF
+UUID=$UUID  /       btrfs  subvol=@root,defaults  0 1
+UUID=$UUID  /home   btrfs  subvol=@home,defaults  0 2
+UUID=$UUID  /var    btrfs  subvol=@var,defaults   0 2
+UUID=$UUID  /log    btrfs  subvol=@log,defaults   0 2
+UUID=$EFI_UUID  /boot/efi  vfat  umask=0077      0 1
+EOF
+
+# 9. Chroot setup
+echo "Setting up system in chroot..."
+echo "This may take a few minutes..."
+
+mount_with_check --bind /dev /mnt/dev
+mount_with_check --bind /proc /mnt/proc
+mount_with_check --bind /sys /mnt/sys
+cp /etc/resolv.conf /mnt/etc/resolv.conf
+
+cat <<CHROOTSCRIPT | chroot /mnt /bin/bash
+set -e
+# Set locale
+echo "$SYS_LANG UTF-8" >> /etc/locale.gen
+locale-gen
+update-locale LANG=$SYS_LANG
+export LANG=$SYS_LANG
+
+# Set keyboard
+echo "KEYMAP=$KBD_LAYOUT" > /etc/vconsole.conf || true
+if [ -x /usr/bin/localectl ]; then
+    localectl set-keymap $KBD_LAYOUT
+fi
+
+# Set timezone
+echo "$SYS_TZ" > /etc/timezone
+ln -sf /usr/share/zoneinfo/$SYS_TZ /etc/localtime
+dpkg-reconfigure -f noninteractive tzdata
+
+apt-get update
+apt-get install -y linux-image-amd64 grub-efi-amd64 sudo btrfs-progs locales console-setup
+
+# Remove live packages automatically
+apt-get remove --purge -y live-config live-boot calamares  calamares-settings-debian --allow-change-held-packages || true
+apt-get autoremove -y --purge
+userdel user
+rm -rf /bin/setup
+update-initramfs -u
+echo "$HOSTNAME" > /etc/hostname
+useradd -m -G sudo -s /bin/bash $USER_NAME
+echo "$USER_NAME:$USER_PASS" | chpasswd
+echo "root:$USER_PASS" | chpasswd
+
+grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=debian --recheck
+update-grub
+
+systemctl enable systemd-timesyncd
+
+CHROOTSCRIPT
+
+umount -R /mnt
+
+echo "$T_INSTALL_DONE"
+
+# 10. Post-installation options
+echo
+echo "$T_POST_OPTIONS"
+echo "$T_POST_OPTIONS_LIST"
+echo
+echo "$T_POST_INPUT"
+read -r POST_ACTIONS
+
+# Helper: run in chroot
+run_in_chroot() {
+    local cmd="$1"
+    mount_with_check --bind /dev /mnt/dev
+    mount_with_check --bind /proc /mnt/proc
+    mount_with_check --bind /sys /mnt/sys
+    cp /etc/resolv.conf /mnt/etc/resolv.conf
+    chroot /mnt /bin/bash -c "$cmd"
+    umount -l /mnt/dev
+    umount -l /mnt/proc
+    umount -l /mnt/sys
+}
+
+POST_ACTIONS=$(echo "$POST_ACTIONS" | tr '[:upper:]' '[:lower:]' | tr -d ' ')
+
+if [[ "$POST_ACTIONS" == "all" ]]; then
+    POST_ACTIONS="1,2,3,4,5"
+fi
+
+IFS=',' read -ra actions_arr <<< "$POST_ACTIONS"
+
+for act in "${actions_arr[@]}"; do
+    case "$act" in
+        1)
+            echo "$T_EDIT_SOURCES"
+            run_in_chroot "nano /etc/apt/sources.list"
+            ;;
+        2)
+            echo "$T_UPDATE"
+            run_in_chroot "apt-get update && apt-get upgrade -y"
+            ;;
+        3)
+            echo "$T_PRINTER"
+            echo "$T_PRINTER_LIST"
+            read -p "" PRINTER_CHOICE
+            case "$PRINTER_CHOICE" in
+                1)
+                    run_in_chroot "apt-get update && apt-get install -y cups system-config-printer hplip"
+                    ;;
+                2)
+                    run_in_chroot "apt-get update && apt-get install -y cups system-config-printer printer-driver-gutenprint"
+                    ;;
+                3)
+                    run_in_chroot "apt-get update && apt-get install -y cups system-config-printer printer-driver-escpr"
+                    ;;
+                4)
+                    run_in_chroot "apt-get update && apt-get install -y cups system-config-printer hplip printer-driver-gutenprint printer-driver-escpr"
+                    ;;
+                5)
+                    echo "$T_PRINTER_SKIP"
+                    ;;
+                *)
+                    echo "$T_PRINTER_UNKNOWN"
+                    ;;
+            esac
+            ;;
+        4)
+            read -p "$T_NVIDIA_PROMPT" NVIDIA_CHOICE
+            NVIDIA_CHOICE=$(echo "$NVIDIA_CHOICE" | tr '[:upper:]' '[:lower:]')
+            if [[ "$NVIDIA_CHOICE" == "y" || "$NVIDIA_CHOICE" == "yes" ]]; then
+                echo "$T_NVIDIA_INSTALL"
+                run_in_chroot "apt-get update && apt-get install -y nvidia-driver"
+                echo "$T_NVIDIA_NOTE"
+            else
+                echo "$T_NVIDIA_SKIP"
+            fi
+            ;;
+        5)
+            echo "$T_CONFIGURE_ZSH"
+            run_in_chroot "apt-get update && apt-get install -y curl && bash -c \"\$(curl -L https://l.tmoe.me/ee/zsh)\""
+            ;;
+        *)
+            echo "$T_UNKNOWN_OPTION $act"
+            ;;
+    esac
+done
+
+echo "$T_ALL_DONE"
